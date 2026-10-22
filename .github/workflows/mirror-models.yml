@@ -1,0 +1,49 @@
+# Copies the app's on-device models into this repository's releases, so the
+# ImageBulk app never depends on someone else's upload staying online.
+# Runs on push to main and by hand (Actions > Mirror models > Run workflow).
+name: Mirror models
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download and publish
+        run: |
+          set -euo pipefail
+          # tag | file | minimum bytes | source | licence
+          while IFS='|' read -r tag file min url licence; do
+            [ -z "$tag" ] && continue
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null | grep -qx "$file"; then
+              echo "$tag/$file already published"
+              continue
+            fi
+            echo "Downloading $file from $url"
+            curl -fL --retry 4 --retry-delay 5 -o "$file" "$url"
+            size=$(stat -c %s "$file")
+            if [ "$size" -lt "$min" ]; then
+              echo "::error::$file is only $size bytes"; exit 1
+            fi
+            sha=$(sha256sum "$file" | cut -d' ' -f1)
+            notes="Mirror of $url for the ImageBulk app. Licence: $licence. SHA-256: $sha"
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$tag" "$file" --clobber --repo "$GITHUB_REPOSITORY"
+            else
+              gh release create "$tag" "$file" --repo "$GITHUB_REPOSITORY" --title "$tag" --notes "$notes"
+            fi
+            echo "Published $tag/$file ($size bytes, sha256 $sha)"
+            rm -f "$file"
+          done <<'LIST'
+          isnet-v1|isnet-general-use.onnx|10000000|https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx|Apache-2.0
+          migan-v2|migan_pipeline_v2.onnx|5000000|https://huggingface.co/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx|MIT
+          esrgan-v1|realesr-general-x4v3.onnx|1000000|https://huggingface.co/OwlMaster/AllFilesRope/resolve/main/realesr-general-x4v3.onnx|BSD-3-Clause
+          LIST
